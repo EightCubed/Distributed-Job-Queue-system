@@ -2,7 +2,7 @@ package main
 
 import (
 	"context"
-	"log"
+	"fmt"
 	"net/http"
 	"os"
 	"os/signal"
@@ -11,22 +11,36 @@ import (
 
 	"github.com/EightCubed/Distributed-Job-Queue-system/internal/api"
 	"github.com/EightCubed/Distributed-Job-Queue-system/internal/config"
+	"github.com/EightCubed/Distributed-Job-Queue-system/internal/logger"
 	"github.com/gorilla/mux"
+	"go.uber.org/zap"
 )
 
 type App struct {
 	Config config.Config
+	Logger *zap.Logger
 	Server *http.Server
 }
 
 func main() {
-	app := App{Config: config.Config{ServerPort: "8000"}}
+	logger, err := logger.SetupLogger()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "failed to initialize logger")
+		panic(err)
+	}
+	config := &config.Config{
+		ServerPort: "8000",
+	}
+	defer logger.Sync()
+
+	app := App{Config: *config, Logger: logger}
 	app.startServer()
 }
 
 func (app *App) startServer() {
+	sugaredLogger := logger.FetchSugaredLogger(app.Logger)
 	router := mux.NewRouter()
-	initializeRoutes(router)
+	initializeRoutes(router, app.Logger)
 
 	app.Server = &http.Server{
 		Addr:              ":" + app.Config.ServerPort,
@@ -39,9 +53,9 @@ func (app *App) startServer() {
 	}
 
 	go func() {
-		log.Printf("Starting server on port %s...\n", app.Config.ServerPort)
+		sugaredLogger.Infof("Starting server on port %s...", app.Config.ServerPort)
 		if err := app.Server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			log.Fatalf("HTTP server ListenAndServe: %v", err)
+			sugaredLogger.Fatalf("HTTP server ListenAndServe: %v", err)
 		}
 	}()
 
@@ -50,17 +64,25 @@ func (app *App) startServer() {
 	signal.Notify(stopChan, os.Interrupt, syscall.SIGTERM)
 	<-stopChan
 
-	log.Println("Shutting down server gracefully...")
+	sugaredLogger.Info("Shutting down server gracefully...")
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
 	if err := app.Server.Shutdown(ctx); err != nil {
-		log.Fatalf("Server Shutdown Failed:%+v", err)
+		sugaredLogger.Panicf("Server Shutdown Failed:%+v", err)
 	}
-	log.Println("Server stopped successfully.")
+	sugaredLogger.Info("Server stopped successfully.")
 }
 
-func initializeRoutes(router *mux.Router) {
+func initializeRoutes(router *mux.Router, logger *zap.Logger) {
+	handler := api.ReturnHandler(logger)
+
 	v1 := router.PathPrefix("/apis/v1").Subrouter()
-	v1.HandleFunc("/submit-job", api.SubmitJob).Methods("POST")
+	v1.HandleFunc("/submit-job", handler.SubmitJob).Methods("POST")
+
+	v1.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte("ok"))
+	})
+
 }
