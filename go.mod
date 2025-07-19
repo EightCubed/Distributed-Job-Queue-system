@@ -3,7 +3,9 @@ module github.com/EightCubed/Distributed-Job-Queue-system
 go 1.24.4
 
 require (
+	github.com/alitto/pond v1.9.2
 	github.com/alitto/pond/v2 v2.5.0
+	github.com/go-redis/redis v6.15.9+incompatible
 	github.com/go-redis/redis/v8 v8.11.5
 	github.com/google/uuid v1.6.0
 	github.com/gorilla/mux v1.8.1

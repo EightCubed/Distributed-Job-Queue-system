@@ -111,6 +111,7 @@ func initializeRoutes(router *mux.Router, app *App) {
 
 	v1 := router.PathPrefix("/apis/v1").Subrouter()
 	v1.HandleFunc("/submit-job", handler.SubmitJob).Methods("POST")
+	v1.HandleFunc("/jobs", handler.ListJobs).Methods("GET")
 
 	v1.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)

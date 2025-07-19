@@ -7,27 +7,10 @@ import (
 	"time"
 
 	"github.com/EightCubed/Distributed-Job-Queue-system/internal/config"
+	"github.com/EightCubed/Distributed-Job-Queue-system/pkg/models"
 	"github.com/go-redis/redis/v8"
 	"go.uber.org/zap"
 )
-
-type JobBody struct {
-	Type     string      `json:"type"`
-	Payload  PayloadType `json:"payload"`
-	Priority string      `json:"priority"`
-	Delay    int         `json:"delay"`
-}
-
-type PayloadType struct {
-	Data    string `json:"data"`
-	Message string `json:"message"`
-}
-
-type RedisJobType struct {
-	Type        string      `json:"type"`
-	Payload     PayloadType `json:"payload"`
-	ExecutionAt time.Time   `json:"execution_at"`
-}
 
 func (handler *ApiHandler) SubmitJob(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
@@ -36,7 +19,7 @@ func (handler *ApiHandler) SubmitJob(w http.ResponseWriter, r *http.Request) {
 
 	sugar.Info("Received job submission")
 
-	var body JobBody
+	var body models.JobBody
 	decoder := json.NewDecoder(r.Body)
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(&body); err != nil {
@@ -76,7 +59,7 @@ func (handler *ApiHandler) SubmitJob(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	job := RedisJobType{
+	job := models.RedisJobType{
 		Type:        body.Type,
 		Payload:     body.Payload,
 		ExecutionAt: executionAt,
@@ -89,7 +72,7 @@ func (handler *ApiHandler) SubmitJob(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	redisKey := fmt.Sprint("job_id:", jobID)
+	redisKey := fmt.Sprintf("job_%s", body.Priority)
 	score := float64(executionAt.Unix())
 
 	redisCmd := handler.RedisClient.ZAdd(ctx, redisKey, &redis.Z{
