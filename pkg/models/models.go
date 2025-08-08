@@ -1,6 +1,10 @@
 package models
 
-import "time"
+import (
+	"time"
+
+	"go.uber.org/zap"
+)
 
 type Job struct {
 	ID          int       `json:"id"`
@@ -31,17 +35,31 @@ const (
 	JOB_PRIORITY_LOW    JOB_PRIORITY = "LOW"
 )
 
+type JOB_TYPE string
+
+const (
+	JOB_TYPE_EMAIL   JOB_TYPE = "Email"
+	JOB_TYPE_MESSAGE JOB_TYPE = "Message"
+	JOB_TYPE_WEBHOOK JOB_TYPE = "Webhook"
+)
+
 type JobBody struct {
-	Type     string       `json:"type"`
+	Type     JOB_TYPE     `json:"type"`
 	Payload  PayloadType  `json:"payload"`
 	Priority JOB_PRIORITY `json:"priority"`
 	Delay    int          `json:"delay"`
 }
 
 type RedisJobType struct {
-	Type        string      `json:"type"`
-	Payload     PayloadType `json:"payload"`
-	ExecutionAt time.Time   `json:"execution_at"`
+	Type        JOB_TYPE     `json:"type"`
+	Payload     PayloadType  `json:"payload"`
+	ExecutionAt time.Time    `json:"execution_at"`
+	Priority    JOB_PRIORITY `json:"priority"`
+	Retries     int          `json:"retries,omitempty"`
+}
+
+func (r RedisJobType) PerformJob(*zap.SugaredLogger, RedisJobType) error {
+	panic("unimplemented")
 }
 
 type PayloadType struct {

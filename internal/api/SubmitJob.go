@@ -63,6 +63,7 @@ func (handler *ApiHandler) SubmitJob(w http.ResponseWriter, r *http.Request) {
 		Type:        body.Type,
 		Payload:     body.Payload,
 		ExecutionAt: executionAt,
+		Priority:    body.Priority,
 	}
 
 	jobJSON, err := json.Marshal(job)

@@ -12,12 +12,10 @@ func SetupLogger() (*zap.Logger, error) {
 	return logger, nil
 }
 
-// Nicer looking logs but slower
 func FetchSugaredLogger(logger *zap.Logger) *zap.SugaredLogger {
 	return logger.Sugar()
 }
 
-// Logging for time-bound tasks
 func FetchLogger(logger *zap.Logger) *zap.Logger {
 	return logger
 }

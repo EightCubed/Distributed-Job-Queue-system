@@ -50,7 +50,7 @@ func submitJob(priority string, count int) {
 }
 
 func main() {
-	submitJob("HIGH", 10000)
-	submitJob("MEDIUM", 100)
-	submitJob("LOW", 100)
+	submitJob("HIGH", 5)
+	submitJob("MEDIUM", 5)
+	submitJob("LOW", 5)
 }

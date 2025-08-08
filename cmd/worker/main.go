@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"math/rand"
 	"os"
 	"os/signal"
 	"sync"
@@ -13,6 +14,7 @@ import (
 	"github.com/EightCubed/Distributed-Job-Queue-system/internal/config"
 	"github.com/EightCubed/Distributed-Job-Queue-system/internal/db"
 	"github.com/EightCubed/Distributed-Job-Queue-system/internal/logger"
+	"github.com/EightCubed/Distributed-Job-Queue-system/internal/queue"
 	"github.com/EightCubed/Distributed-Job-Queue-system/pkg/models"
 	"github.com/alitto/pond/v2"
 	"github.com/go-redis/redis/v8"
@@ -20,12 +22,75 @@ import (
 )
 
 const (
-	RedisAddr     = "localhost:6379"
-	RedisPassword = ""
+	RedisAddr      = "localhost:6379"
+	RedisPassword  = ""
+	MaxRetries     = 5
+	BaseBackoffSec = 5
 )
 
+type EmailHandler struct {
+	Receiver string `json:"data"`
+	Message  string `json:"message"`
+}
+
+func (email *EmailHandler) ExecuteJob(log *zap.SugaredLogger, job models.RedisJobType) error {
+	err := expectError(config.EMAIL_SUCCESS_CHANCE)
+	if err != nil {
+		return fmt.Errorf("error during sending email")
+	}
+	fmt.Printf("Executed Job %v", email)
+	return nil
+}
+
+func (email *EmailHandler) InitializeHandler(log *zap.SugaredLogger, job models.RedisJobType) {
+	email.Receiver = job.Payload.Data
+	email.Message = job.Payload.Message
+}
+
+type MessageHandler struct {
+	Receiver string `json:"data"`
+	Message  string `json:"message"`
+}
+
+func (msg *MessageHandler) ExecuteJob(log *zap.SugaredLogger, job models.RedisJobType) error {
+	err := expectError(config.EMAIL_SUCCESS_CHANCE)
+	if err != nil {
+		return fmt.Errorf("error during sending message")
+	}
+	fmt.Printf("Executed Job %v", msg)
+	return nil
+}
+
+func (msg *MessageHandler) InitializeHandler(log *zap.SugaredLogger, job models.RedisJobType) {
+	msg.Receiver = job.Payload.Data
+	msg.Message = job.Payload.Message
+}
+
+type WebhookHandler struct {
+	WebhookURL string `json:"data"`
+	Message    string `json:"message"`
+}
+
+func (webhook *WebhookHandler) ExecuteJob(log *zap.SugaredLogger, job models.RedisJobType) error {
+	err := expectError(config.EMAIL_SUCCESS_CHANCE)
+	if err != nil {
+		return fmt.Errorf("error during sending webhook")
+	}
+	fmt.Printf("Executed Job %v", webhook)
+	return nil
+}
+
+func (webhook *WebhookHandler) InitializeHandler(log *zap.SugaredLogger, job models.RedisJobType) {
+	webhook.WebhookURL = job.Payload.Data
+	webhook.Message = job.Payload.Message
+}
+
+type JobType interface {
+	InitializeHandler(*zap.SugaredLogger, models.RedisJobType)
+	ExecuteJob(*zap.SugaredLogger, models.RedisJobType) error
+}
+
 func main() {
-	// create common workers that polls redis for a certain time and adds tasks to one of three channels
 	lgr, err := logger.SetupLogger()
 	if err != nil {
 		panic(err)
@@ -45,53 +110,47 @@ func main() {
 	}()
 
 	redisClient := db.NewRedisClient(RedisAddr, RedisPassword)
-
-	highPriorityJobChannel := make(chan models.RedisJobType, config.BATCH_SIZE)
-	mediumPriorityJobChannel := make(chan models.RedisJobType, config.BATCH_SIZE)
-	lowPriorityJobChannel := make(chan models.RedisJobType, config.BATCH_SIZE)
+	jobQueue := queue.ReturnNewQueue()
 
 	var pollWg sync.WaitGroup
 	pollWg.Add(3)
 
 	var handlerWg sync.WaitGroup
-	handlerWg.Add(3)
+	handlerWg.Add(1)
 
-	go PollAndSendJob(ctx, &pollWg, redisClient, models.JOB_PRIORITY_HIGH, config.HIGH_PRIORITY_POLLING_INTERVAL, highPriorityJobChannel, log)
-	go PollAndSendJob(ctx, &pollWg, redisClient, models.JOB_PRIORITY_MEDIUM, config.MEDIUM_PRIORITY_POLLING_INTERVAL, mediumPriorityJobChannel, log)
-	go PollAndSendJob(ctx, &pollWg, redisClient, models.JOB_PRIORITY_LOW, config.LOW_PRIORITY_POLLING_INTERVAL, lowPriorityJobChannel, log)
+	go PollAndSendJob(ctx, &pollWg, redisClient, models.JOB_PRIORITY_HIGH, config.HIGH_PRIORITY_POLLING_INTERVAL, jobQueue.HighPriorityJobQueue, log)
+	go PollAndSendJob(ctx, &pollWg, redisClient, models.JOB_PRIORITY_MEDIUM, config.MEDIUM_PRIORITY_POLLING_INTERVAL, jobQueue.MediumPriorityJobQueue, log)
+	go PollAndSendJob(ctx, &pollWg, redisClient, models.JOB_PRIORITY_LOW, config.LOW_PRIORITY_POLLING_INTERVAL, jobQueue.LowPriorityJobQueue, log)
 
-	highPriorityPool := pond.NewPool(100)
-	mediumPriorityPool := pond.NewPool(500)
-	lowPriorityPool := pond.NewPool(1000)
-	log.Infof("%s Priority Pool started", models.JOB_PRIORITY_HIGH)
-	log.Infof("%s Priority Pool started", models.JOB_PRIORITY_MEDIUM)
-	log.Infof("%s Priority Pool started", models.JOB_PRIORITY_LOW)
+	workerPool := pond.NewPool(50)
+	log.Info("Worker Pool started")
 
-	go handleJobs(&handlerWg, highPriorityPool, highPriorityJobChannel, log)
-	go handleJobs(&handlerWg, mediumPriorityPool, mediumPriorityJobChannel, log)
-	go handleJobs(&handlerWg, lowPriorityPool, lowPriorityJobChannel, log)
+	go handleJobs(ctx, &handlerWg, workerPool, jobQueue, log, redisClient)
 
 	go func() {
 		pollWg.Wait()
-		close(highPriorityJobChannel)
-		close(mediumPriorityJobChannel)
-		close(lowPriorityJobChannel)
+		close(jobQueue.HighPriorityJobQueue)
+		close(jobQueue.MediumPriorityJobQueue)
+		close(jobQueue.LowPriorityJobQueue)
 	}()
 
 	handlerWg.Wait()
-	highPriorityPool.StopAndWait()
-	log.Infof("%s Priority Pool stopped", models.JOB_PRIORITY_HIGH)
-	mediumPriorityPool.StopAndWait()
-	log.Infof("%s Priority Pool stopped", models.JOB_PRIORITY_MEDIUM)
-	lowPriorityPool.StopAndWait()
-	log.Infof("%s Priority Pool stopped", models.JOB_PRIORITY_LOW)
-
+	workerPool.StopAndWait()
+	log.Info("Worker Pool stopped")
 	log.Info("Graceful shutdown complete")
 }
 
-func PollAndSendJob(ctx context.Context, wg *sync.WaitGroup, redisClient *redis.Client, priority models.JOB_PRIORITY, polling_interval time.Duration, jobChan chan<- models.RedisJobType, log *zap.SugaredLogger) {
+func PollAndSendJob(
+	ctx context.Context,
+	wg *sync.WaitGroup,
+	redisClient *redis.Client,
+	priority models.JOB_PRIORITY,
+	pollingInterval time.Duration,
+	jobChan chan<- models.RedisJobType,
+	log *zap.SugaredLogger,
+) {
 	defer wg.Done()
-	ticker := time.NewTicker(polling_interval)
+	ticker := time.NewTicker(pollingInterval)
 	defer ticker.Stop()
 
 	key := fmt.Sprintf("job_%s", priority)
@@ -101,10 +160,8 @@ func PollAndSendJob(ctx context.Context, wg *sync.WaitGroup, redisClient *redis.
 		case <-ctx.Done():
 			log.Infof("Polling stopped for %s", priority)
 			return
-
 		case <-ticker.C:
 			now := float64(time.Now().Unix())
-
 			jobs, err := redisClient.ZRangeByScore(ctx, key, &redis.ZRangeBy{
 				Min:   "0",
 				Max:   fmt.Sprintf("%.0f", now),
@@ -115,10 +172,9 @@ func PollAndSendJob(ctx context.Context, wg *sync.WaitGroup, redisClient *redis.
 				continue
 			}
 
-			log.Infow("Polled jobs",
-				"priority", priority,
-				"count", len(jobs),
-			)
+			if len(jobs) > 0 {
+				log.Infow("Polled jobs", "priority", priority, "count", len(jobs))
+			}
 
 			for _, jobStr := range jobs {
 				var job models.RedisJobType
@@ -127,35 +183,110 @@ func PollAndSendJob(ctx context.Context, wg *sync.WaitGroup, redisClient *redis.
 					continue
 				}
 
-				jobChan <- job
-				if err := redisClient.ZRem(ctx, key, jobStr).Err(); err != nil {
-					log.Warnf("Failed to remove job from Redis: %v", err)
+				select {
+				case jobChan <- job:
+					if err := redisClient.ZRem(ctx, key, jobStr).Err(); err != nil {
+						log.Warnf("Failed to remove job from Redis: %v", err)
+					}
+				case <-ctx.Done():
+					return
 				}
 			}
 		}
 	}
 }
 
-func performTask(job models.RedisJobType, log *zap.SugaredLogger) {
-	log.Infow("Job Executed",
-		"type", job.Type,
-		"data", job.Payload.Data,
-		"message", job.Payload.Message,
-	)
+var jobRegistry = map[models.JOB_TYPE]JobType{
+	models.JOB_TYPE_EMAIL:   &EmailHandler{},
+	models.JOB_TYPE_MESSAGE: &MessageHandler{},
+	models.JOB_TYPE_WEBHOOK: &WebhookHandler{},
+}
+
+func performTask(log *zap.SugaredLogger, job models.RedisJobType, redisClient *redis.Client) {
+	jobType := models.JOB_TYPE(job.Type)
+
+	handler, exists := jobRegistry[jobType]
+	if !exists {
+		log.Errorf("No handler registered for job type: %s", job.Type)
+		return
+	}
+
+	handler.InitializeHandler(log, job)
+
+	if err := handler.ExecuteJob(log, job); err != nil {
+		log.Errorf("Job execution failed for type %s: %v", job.Type, err)
+
+		if job.Retries < MaxRetries {
+			job.Retries++
+			delay := time.Duration(BaseBackoffSec*(1<<job.Retries)) * time.Second
+
+			executeAt := time.Now().Add(delay).Unix()
+			key := fmt.Sprintf("job_%s", job.Priority)
+
+			jobBytes, _ := json.Marshal(job)
+			if err := redisClient.ZAdd(context.Background(), key, &redis.Z{
+				Score:  float64(executeAt),
+				Member: string(jobBytes),
+			}).Err(); err != nil {
+				log.Errorf("Failed to requeue job: %v", err)
+			} else {
+				log.Infof("Requeued job %s for retry #%d after %v", job.Type, job.Retries, delay)
+			}
+		} else {
+			log.Warnf("Max retries reached for job %s. Dropping job.", job.Type)
+		}
+	} else {
+		log.Infof("Job executed successfully: %s", job.Type)
+	}
 }
 
 func handleJobs(
+	ctx context.Context,
 	wg *sync.WaitGroup,
 	pool pond.Pool,
-	jobChan <-chan models.RedisJobType,
+	jobQueue *queue.JobQueueType,
 	log *zap.SugaredLogger,
+	redisClient *redis.Client,
 ) {
 	defer wg.Done()
 
-	for job := range jobChan {
-		j := job // avoid closure bug
-		pool.Submit(func() {
-			performTask(j, log)
-		})
+	for {
+		select {
+		case <-ctx.Done():
+			log.Info("Stopping job handler")
+			return
+		case job, ok := <-jobQueue.HighPriorityJobQueue:
+			if !ok {
+				jobQueue.HighPriorityJobQueue = nil
+				continue
+			}
+			pool.Submit(func() { performTask(log, job, redisClient) })
+		case job, ok := <-jobQueue.MediumPriorityJobQueue:
+			if !ok {
+				jobQueue.MediumPriorityJobQueue = nil
+				continue
+			}
+			pool.Submit(func() { performTask(log, job, redisClient) })
+		case job, ok := <-jobQueue.LowPriorityJobQueue:
+			if !ok {
+				jobQueue.LowPriorityJobQueue = nil
+				continue
+			}
+			pool.Submit(func() { performTask(log, job, redisClient) })
+		}
+
+		if jobQueue.HighPriorityJobQueue == nil &&
+			jobQueue.MediumPriorityJobQueue == nil &&
+			jobQueue.LowPriorityJobQueue == nil {
+			log.Info("All job queues closed, handler exiting")
+			return
+		}
 	}
+}
+
+func expectError(chance int) error {
+	if chance < rand.Intn(100) {
+		return fmt.Errorf("Error")
+	}
+	return nil
 }

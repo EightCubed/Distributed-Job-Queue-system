@@ -84,7 +84,6 @@ func (app *App) startServer() {
 		}
 	}()
 
-	// Listen for termination signals
 	stopChan := make(chan os.Signal, 1)
 	signal.Notify(stopChan, os.Interrupt, syscall.SIGTERM)
 	<-stopChan
