@@ -2,8 +2,6 @@ package models
 
 import (
 	"time"
-
-	"go.uber.org/zap"
 )
 
 type Job struct {
@@ -51,15 +49,12 @@ type JobBody struct {
 }
 
 type RedisJobType struct {
+	JobID       int          `json:"job_id`
 	Type        JOB_TYPE     `json:"type"`
 	Payload     PayloadType  `json:"payload"`
 	ExecutionAt time.Time    `json:"execution_at"`
 	Priority    JOB_PRIORITY `json:"priority"`
 	Retries     int          `json:"retries,omitempty"`
-}
-
-func (r RedisJobType) PerformJob(*zap.SugaredLogger, RedisJobType) error {
-	panic("unimplemented")
 }
 
 type PayloadType struct {

@@ -60,6 +60,7 @@ func (handler *ApiHandler) SubmitJob(w http.ResponseWriter, r *http.Request) {
 	}
 
 	job := models.RedisJobType{
+		JobID:       jobID,
 		Type:        body.Type,
 		Payload:     body.Payload,
 		ExecutionAt: executionAt,
@@ -90,5 +91,4 @@ func (handler *ApiHandler) SubmitJob(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusCreated)
 	w.Write([]byte("Job submitted successfully"))
 	logger.Info("Job inserted into database")
-
 }

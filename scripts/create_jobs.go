@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"os"
+	"strconv"
 )
 
 type Payload struct {
@@ -50,7 +52,20 @@ func submitJob(priority string, count int) {
 }
 
 func main() {
-	submitJob("HIGH", 5)
-	submitJob("MEDIUM", 5)
-	submitJob("LOW", 5)
+	args := os.Args[1:]
+	HIGH_PRIORITY_JOB_COUNT, err := strconv.Atoi(args[0])
+	if err != nil {
+		panic(fmt.Errorf("passed in invalid arguments"))
+	}
+	MEDIUM_PRIORITY_JOB_COUNT, err := strconv.Atoi(args[1])
+	if err != nil {
+		panic(fmt.Errorf("passed in invalid arguments"))
+	}
+	LOW_PRIORITY_JOB_COUNT, err := strconv.Atoi(args[2])
+	if err != nil {
+		panic(fmt.Errorf("passed in invalid arguments"))
+	}
+	submitJob("HIGH", HIGH_PRIORITY_JOB_COUNT)
+	submitJob("MEDIUM", MEDIUM_PRIORITY_JOB_COUNT)
+	submitJob("LOW", LOW_PRIORITY_JOB_COUNT)
 }

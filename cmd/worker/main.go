@@ -18,6 +18,7 @@ import (
 	"github.com/EightCubed/Distributed-Job-Queue-system/pkg/models"
 	"github.com/alitto/pond/v2"
 	"github.com/go-redis/redis/v8"
+	"github.com/jackc/pgx/v5/pgxpool"
 	"go.uber.org/zap"
 )
 
@@ -26,6 +27,7 @@ const (
 	RedisPassword  = ""
 	MaxRetries     = 5
 	BaseBackoffSec = 5
+	PostgresDSN    = "postgres://rockon:password@localhost:5432/job-queue?sslmode=disable"
 )
 
 type EmailHandler struct {
@@ -110,6 +112,11 @@ func main() {
 	}()
 
 	redisClient := db.NewRedisClient(RedisAddr, RedisPassword)
+	postgresPool, err := db.NewPostgresPool(PostgresDSN)
+	if err != nil {
+		log.Fatal("Failed to connect to Postgres", zap.Error(err))
+	}
+	defer postgresPool.Close()
 	jobQueue := queue.ReturnNewQueue()
 
 	var pollWg sync.WaitGroup
@@ -125,7 +132,7 @@ func main() {
 	workerPool := pond.NewPool(50)
 	log.Info("Worker Pool started")
 
-	go handleJobs(ctx, &handlerWg, workerPool, jobQueue, log, redisClient)
+	go handleJobs(ctx, &handlerWg, workerPool, jobQueue, log, redisClient, postgresPool)
 
 	go func() {
 		pollWg.Wait()
@@ -202,7 +209,7 @@ var jobRegistry = map[models.JOB_TYPE]JobType{
 	models.JOB_TYPE_WEBHOOK: &WebhookHandler{},
 }
 
-func performTask(log *zap.SugaredLogger, job models.RedisJobType, redisClient *redis.Client) {
+func performTask(ctx context.Context, log *zap.SugaredLogger, job models.RedisJobType, redisClient *redis.Client, postgresPool *pgxpool.Pool) {
 	jobType := models.JOB_TYPE(job.Type)
 
 	handler, exists := jobRegistry[jobType]
@@ -213,9 +220,15 @@ func performTask(log *zap.SugaredLogger, job models.RedisJobType, redisClient *r
 
 	handler.InitializeHandler(log, job)
 
+	jobID := job.JobID
+
+	_, err := postgresPool.Exec(ctx, "UPDATE jobs SET status = $1 WHERE id = $2", models.JOB_STATUS_PROGRESS, jobID)
+	if err != nil {
+		log.Errorf("Failed to update job status: %v", err)
+	}
+
 	if err := handler.ExecuteJob(log, job); err != nil {
 		log.Errorf("Job execution failed for type %s: %v", job.Type, err)
-
 		if job.Retries < MaxRetries {
 			job.Retries++
 			delay := time.Duration(BaseBackoffSec*(1<<job.Retries)) * time.Second
@@ -229,13 +242,29 @@ func performTask(log *zap.SugaredLogger, job models.RedisJobType, redisClient *r
 				Member: string(jobBytes),
 			}).Err(); err != nil {
 				log.Errorf("Failed to requeue job: %v", err)
+				_, err := postgresPool.Exec(ctx, "UPDATE jobs SET status = $1 WHERE id = $2", models.JOB_STATUS_FAILED, jobID)
+				if err != nil {
+					log.Errorf("Failed to update job status: %v", err)
+				}
 			} else {
 				log.Infof("Requeued job %s for retry #%d after %v", job.Type, job.Retries, delay)
+				_, err := postgresPool.Exec(ctx, "UPDATE jobs SET status = $1 WHERE id = $2", models.JOB_STATUS_QUEUED, jobID)
+				if err != nil {
+					log.Errorf("Failed to update job status: %v", err)
+				}
 			}
 		} else {
 			log.Warnf("Max retries reached for job %s. Dropping job.", job.Type)
+			_, err := postgresPool.Exec(ctx, "UPDATE jobs SET status = $1 WHERE id = $2", models.JOB_STATUS_FAILED, jobID)
+			if err != nil {
+				log.Errorf("Failed to update job status: %v", err)
+			}
 		}
 	} else {
+		_, err := postgresPool.Exec(ctx, "UPDATE jobs SET status = $1", models.JOB_STATUS_COMPLETED)
+		if err != nil {
+			log.Errorf("Failed to update job status: %v", err)
+		}
 		log.Infof("Job executed successfully: %s", job.Type)
 	}
 }
@@ -247,6 +276,7 @@ func handleJobs(
 	jobQueue *queue.JobQueueType,
 	log *zap.SugaredLogger,
 	redisClient *redis.Client,
+	postgresPool *pgxpool.Pool,
 ) {
 	defer wg.Done()
 
@@ -260,19 +290,19 @@ func handleJobs(
 				jobQueue.HighPriorityJobQueue = nil
 				continue
 			}
-			pool.Submit(func() { performTask(log, job, redisClient) })
+			pool.Submit(func() { performTask(ctx, log, job, redisClient, postgresPool) })
 		case job, ok := <-jobQueue.MediumPriorityJobQueue:
 			if !ok {
 				jobQueue.MediumPriorityJobQueue = nil
 				continue
 			}
-			pool.Submit(func() { performTask(log, job, redisClient) })
+			pool.Submit(func() { performTask(ctx, log, job, redisClient, postgresPool) })
 		case job, ok := <-jobQueue.LowPriorityJobQueue:
 			if !ok {
 				jobQueue.LowPriorityJobQueue = nil
 				continue
 			}
-			pool.Submit(func() { performTask(log, job, redisClient) })
+			pool.Submit(func() { performTask(ctx, log, job, redisClient, postgresPool) })
 		}
 
 		if jobQueue.HighPriorityJobQueue == nil &&
